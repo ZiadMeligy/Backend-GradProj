@@ -1,0 +1,133 @@
+name: CI/CD Pipeline - .NET Backend
+
+on:
+  push:
+    branches:
+      - main 
+
+jobs:
+  build-and-deploy:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Create app_offline.htm on Remote Server
+        shell: pwsh
+        run: |
+          $ftpServer = "ftp://site18808.siteasp.net/wwwroot/app_offline.htm"
+          $ftpUser = "site18808"
+          $ftpPassword = "${{ secrets.FTP_PASSWORD }}"
+          
+          $content = @"
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Site Maintenance</title>
+              <style>
+                  body { font-family: Arial, sans-serif; text-align: center; background-color: #f8f9fa; color: #333; margin: 0; padding: 50px; }
+                  .container { max-width: 600px; margin: auto; padding: 20px; background: white; border-radius: 10px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1); }
+                  h1 { color: #d9534f; }
+                  p { font-size: 18px; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🚧 Site Under Maintenance 🚧</h1>
+                  <p>We are currently performing scheduled maintenance.</p>
+                  <p>Please check back later.</p>
+                  <p>Thank you for your patience!</p>
+              </div>
+          </body>
+          </html>
+          "@
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
+          $request = [System.Net.FtpWebRequest]::Create($ftpServer)
+          $request.Credentials = New-Object System.Net.NetworkCredential($ftpUser, $ftpPassword)
+          $request.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
+          $request.ContentLength = $bytes.Length
+          $stream = $request.GetRequestStream()
+          $stream.Write($bytes, 0, $bytes.Length)
+          $stream.Close()
+          Write-Host "app_offline.htm created."
+      - name: Clear Remote wwwroot Directory using PowerShell FTP
+        shell: pwsh
+        run: |
+          $ftpServer = "ftp://site18808.siteasp.net/wwwroot/"
+          $ftpUser = "site18808"
+          $ftpPassword = "${{ secrets.FTP_PASSWORD }}"
+          function Delete-FTPFile($file) {
+              try {
+                  $fileToDelete = "$ftpServer/$file"
+                  $deleteRequest = [System.Net.FtpWebRequest]::Create($fileToDelete)
+                  $deleteRequest.Credentials = New-Object System.Net.NetworkCredential($ftpUser, $ftpPassword)
+                  $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::DeleteFile
+                  $deleteResponse = $deleteRequest.GetResponse()
+                  $deleteResponse.Close()
+                  Write-Host "Deleted: $file"
+              }
+              catch {
+                  $errorMessage = $_.Exception.Message
+                  Write-Host ("Error deleting {0}: {1}" -f $file, $errorMessage)
+              }
+          }
+          $request = [System.Net.FtpWebRequest]::Create($ftpServer)
+          $request.Credentials = New-Object System.Net.NetworkCredential($ftpUser, $ftpPassword)
+          $request.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectory
+          $response = $request.GetResponse()
+          $reader = New-Object System.IO.StreamReader $response.GetResponseStream()
+          $files = $reader.ReadToEnd().Split("`n") | ForEach-Object { $_.Trim() }
+          $reader.Close()
+          $response.Close()
+          foreach ($file in $files) {
+              if ($file -ne "" -and $file -ne "app_offline.htm") {
+                  Delete-FTPFile($file)
+              }
+          }
+          Write-Host "Cleanup completed."
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '8.0' 
+
+      - name: Restore Dependencies
+        run: dotnet restore "Server/GP_Server.sln"
+
+      - name: Build Project
+        run: dotnet build "Server/GP_Server.sln" --configuration Release
+
+      - name: Publish Backend
+        run: dotnet publish "Server/src/GP_Server.Api/GP_Server.Api.csproj" -c Release -o ./publish
+
+      - name: Deploy Backend via FTP
+        uses: SamKirkland/FTP-Deploy-Action@4.1.0
+        with:
+          server: site18808.siteasp.net
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./publish/
+          server-dir: /wwwroot/
+
+
+      - name: Remove app_offline.htm After Deployment
+        shell: pwsh
+        run: |
+            $ftpServer = "ftp://site18808.siteasp.net/wwwroot/app_offline.htm"
+            $ftpUser = "site18808"
+            $ftpPassword = "${{ secrets.FTP_PASSWORD }}"
+            try {
+                $deleteRequest = [System.Net.FtpWebRequest]::Create($ftpServer)
+                $deleteRequest.Credentials = New-Object System.Net.NetworkCredential($ftpUser, $ftpPassword)
+                $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::DeleteFile
+                $deleteResponse = $deleteRequest.GetResponse()
+                $deleteResponse.Close()
+                Write-Host "app_offline.htm removed, site is back online."
+            }
+            catch {
+                $errorMessage = $_.Exception.Message
+                Write-Host ("Error deleting app_offline.htm: {0}" -f $errorMessage)
+            }

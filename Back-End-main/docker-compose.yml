@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"  # Expose only HTTP for local development
+    depends_on:
+      - postgres
+      - orthanc
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Database=GP_Database;Username=postgres;Password=mysecretpassword;Port=5432
+      - ASPNETCORE_URLS=http://+:8080  # Remove HTTPS binding
+      - Orthanc__BaseUrl=http://orthanc:8042
+      - AI__Endpoint=http://host.docker.internal:8000/generate_report_dicom
+    volumes:
+      - ./uploads:/app/wwwroot/uploads
+    networks:
+      - gp-network
+
+  orthanc:
+    image: docker.io/jodogne/orthanc-python:latest
+    container_name: gp-orthanc
+    restart: always
+    ports:
+      - "8042:8042"
+      - "4242:4242"  # DICOM port
+    environment:
+      ORTHANC__NAME: "GP-Orthanc"
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+      ORTHANC__AUTHENTICATION_ENABLED: "false"
+      ORTHANC__DICOM_SERVER_ENABLED: "true"
+      ORTHANC__DICOM_AET: "ORTHANC"
+      ORTHANC__DICOM_PORT: "4242"
+      ORTHANC__HTTP_PORT: "8042"
+      ORTHANC__SAVE_JOBS: "true"
+      ORTHANC__OVERWRITE_INSTANCES: "true"
+    volumes:
+      - orthanc-db:/var/lib/orthanc/db
+      - orthanc-storage:/var/lib/orthanc/storage
+    networks:
+      - gp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8042/system"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:latest
+    container_name: gp-postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: mysecretpassword
+      POSTGRES_DB: GP_Database
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - gp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres-data:
+    driver: local
+  orthanc-db:
+    driver: local
+  orthanc-storage:
+    driver: local
+
+networks:
+  gp-network:
+    driver: bridge
